@@ -232,6 +232,12 @@ tbody tr:hover{background:var(--surface-2)}
 }
 .fbtn:hover{border-color:var(--ink); color:var(--ink)}
 .fbtn[aria-pressed="true"]{background:var(--ink); border-color:var(--ink); color:var(--surface)}
+th.sortable{cursor:pointer; user-select:none; transition:color var(--fast) var(--ease)}
+th.sortable:hover{color:var(--ink)}
+th.sortable .sarrow{display:inline-block; margin-left:3px; font-size:9px; opacity:.28; vertical-align:1px}
+th.sortable.on{color:var(--accent)}
+th.sortable.on .sarrow{opacity:1}
+.sorthint{font-family:var(--font-mono); font-size:10.5px; color:var(--muted); align-self:center; margin-left:var(--sp2)}
 .empty{padding:var(--sp5) var(--sp3); text-align:center; color:var(--muted); font-family:var(--font-mono); font-size:12px}
 
 /* ============ 底部说明 ============ */
@@ -400,13 +406,16 @@ code{font-family:var(--font-mono); font-size:12px; background:var(--surface-2); 
       <button class="fbtn" data-filter="overdue" aria-pressed="false">超 30 天</button>
       <button class="fbtn" data-filter="paid" aria-pressed="false">已收</button>
       <button class="fbtn" data-filter="all" aria-pressed="false">全部</button>
+      <span class="sorthint" id="sortHint"></span>
     </div>
     <div class="tbl-wrap">
       <table>
         <thead><tr>
-          <th>收入日期</th><th>项目</th><th>渠道</th>
-          <th style="text-align:right">金额</th><th style="text-align:right">账龄</th>
-          <th>原表月份</th><th>收款日</th><th>状态</th>
+          <th class="sortable" data-sort="date">收入日期<span class="sarrow"></span></th><th>项目</th><th>渠道</th>
+          <th style="text-align:right">金额</th>
+          <th class="sortable" data-sort="days" style="text-align:right">账龄<span class="sarrow"></span></th>
+          <th>原表月份</th>
+          <th class="sortable" data-sort="paid">收款日<span class="sarrow"></span></th><th>状态</th>
         </tr></thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -813,8 +822,30 @@ document.getElementById('periodLine').textContent =
 (function(){
   var tbody = document.getElementById('tbody');
   var state = 'unpaid';
+  var sortKey = 'date';   // date | days | paid
+  var sortDir = 1;        // 1 = 正序(早→晚 / 小→大)  -1 = 倒序
 
   function ageClass(d){ return d>=90?'old':(d>=30?'mid':''); }
+
+  // "YYYY/M/D" -> 可比较的整数，避免字符串比较把 2026/9/8 排在 2026/10/1 之后
+  function dkey(s){
+    var m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})/.exec(s||'');
+    return m ? (+m[1])*10000 + (+m[2])*100 + (+m[3]) : 0;
+  }
+
+  function defaultSort(st){ return st==='paid' ? {k:'paid', d:1} : {k:'date', d:1}; }
+
+  function syncHead(){
+    document.querySelectorAll('th.sortable').forEach(function(th){
+      var on = th.dataset.sort === sortKey;
+      th.classList.toggle('on', on);
+      var a = th.querySelector('.sarrow');
+      if(a) a.textContent = on ? (sortDir > 0 ? '▲' : '▼') : '▲';
+    });
+    var lbl = {date:'收入日期', days:'账龄', paid:'收款日'}[sortKey];
+    var hint = document.getElementById('sortHint');
+    if(hint) hint.textContent = '按 ' + lbl + (sortDir > 0 ? ' 正序' : ' 倒序') + ' · 点表头可切换';
+  }
 
   function render(){
     var rows;
@@ -824,11 +855,20 @@ document.getElementById('periodLine').textContent =
     else rows = T.unpaid.filter(function(r){ return r.days>30; });
 
     rows.sort(function(a,b){
-      if(state==='paid') return (a.paid_date||'').localeCompare(b.paid_date||'');
-      return b.days - a.days;
+      // 收款日为空 = 日期未知：无论正序倒序都沉底，避免空值霸占头部
+      if(sortKey==='paid'){
+        var pa = a.paid_date||'', pb = b.paid_date||'';
+        if(!pa !== !pb) return !pa ? 1 : -1;
+      }
+      var r;
+      if(sortKey==='days')      r = (a.days||0) - (b.days||0);
+      else if(sortKey==='paid') r = (a.paid_date||'').localeCompare(b.paid_date||'');
+      else                      r = dkey(a.date) - dkey(b.date);
+      if(r === 0) r = (b.amount||0) - (a.amount||0);   // 同键时大额优先，顺序稳定
+      return sortDir * r;
     });
 
-    if(!rows.length){ tbody.innerHTML = '<tr><td colspan="8" class="empty">没有符合条件的记录</td></tr>'; return; }
+    if(!rows.length){ tbody.innerHTML = '<tr><td colspan="8" class="empty">没有符合条件的记录</td></tr>'; syncHead(); return; }
     tbody.innerHTML = rows.map(function(r){
       var paid = r.status==='已收';
       var tag = paid ? '<span class="tag paid">已收</span>'
@@ -844,11 +884,24 @@ document.getElementById('periodLine').textContent =
         '<td>'+tag+'</td>'+
       '</tr>';
     }).join('');
+    syncHead();
   }
+
+  /* 点表头切换排序：同列再点一次 = 反向 */
+  document.querySelectorAll('th.sortable').forEach(function(th){
+    th.addEventListener('click', function(){
+      var k = th.dataset.sort;
+      if(sortKey === k) sortDir = -sortDir;
+      else { sortKey = k; sortDir = 1; }
+      render();
+    });
+  });
 
   document.querySelectorAll('.fbtn').forEach(function(b){
     b.addEventListener('click', function(){
       state = b.dataset.filter;
+      var ds = defaultSort(state);          // 切筛选时回到该视图默认排序
+      sortKey = ds.k; sortDir = ds.d;
       document.querySelectorAll('.fbtn').forEach(function(x){ x.setAttribute('aria-pressed', x===b ? 'true':'false'); });
       render();
     });
